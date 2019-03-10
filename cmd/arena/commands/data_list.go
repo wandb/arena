@@ -21,7 +21,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/kubeflow/arena/util"
+	"github.com/kubeflow/arena/pkg/util"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"k8s.io/api/core/v1"
@@ -49,6 +49,13 @@ func NewDataListCommand() *cobra.Command {
 			setupKubeconfig()
 			_, err := initKubeClient()
 			if err != nil {
+				fmt.Println(err)
+				os.Exit(1)
+			}
+
+			err = updateNamespace(cmd)
+			if err != nil {
+				log.Debugf("Failed due to %v", err)
 				fmt.Println(err)
 				os.Exit(1)
 			}

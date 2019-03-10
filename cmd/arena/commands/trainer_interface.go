@@ -15,6 +15,8 @@
 package commands
 
 import (
+	"time"
+
 	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -28,6 +30,9 @@ type TrainingJob interface {
 	// Get the name of the Training Job
 	Name() string
 
+	// Get the namespace of the Training Job
+	Namespace() string
+
 	// Get all the pods of the Training Job
 	AllPods() []v1.Pod
 
@@ -38,7 +43,10 @@ type TrainingJob interface {
 	Trainer() string
 
 	// Get the Job Age
-	Age() string
+	Age() time.Duration
+
+	// Get the Job Duration
+	Duration() time.Duration
 
 	// Get start time
 	StartTime() *metav1.Time
@@ -65,4 +73,6 @@ type Trainer interface {
 
 	// Get the type of trainer
 	Type() string
+
+	ListTrainingJobs() ([]TrainingJob, error)
 }

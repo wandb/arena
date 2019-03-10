@@ -21,11 +21,12 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
-	"github.com/kubeflow/arena/util/helm"
 	"strconv"
 	"text/tabwriter"
-	"k8s.io/api/core/v1"
 	"time"
+
+	"github.com/kubeflow/arena/pkg/util"
+	"k8s.io/api/core/v1"
 )
 
 func NewTopJobCommand() *cobra.Command {
@@ -35,74 +36,80 @@ func NewTopJobCommand() *cobra.Command {
 		Use:   "job",
 		Short: "Display Resource (GPU) usage of jobs.",
 		Run: func(cmd *cobra.Command, args []string) {
+			util.SetLogLevel(logLevel)
 			setupKubeconfig()
 			client, err := initKubeClient()
 			if err != nil {
 				fmt.Println(err)
 				os.Exit(1)
 			}
-			printStart:
-			releaseMap, err := helm.ListReleaseMap()
-			// log.Printf("releaseMap %v", releaseMap)
+
+			err = updateNamespace(cmd)
 			if err != nil {
+				log.Debugf("Failed due to %v", err)
 				fmt.Println(err)
 				os.Exit(1)
 			}
 
-			// allPods, err := acquireAllActivePods(client)
-			// if err != nil {
-			// 	fmt.Println(err)
-			// 	os.Exit(1)
-			// }
+			var (
+				topJobName    string
+				trainingType  string
+				job           TrainingJob
+				jobs          []TrainingJob
+				showGpuMetric bool
+			)
 
-			allPods, err = acquireAllPods(client)
-			if err != nil {
-				fmt.Println(err)
-				os.Exit(1)
-			}
-
-			allJobs, err = acquireAllJobs(client)
-			if err != nil {
-				fmt.Println(err)
-				os.Exit(1)
-			}
-
-			trainers := NewTrainers(client)
-			jobs := []TrainingJob{}
-			var topPodName string
 			if len(args) > 0 {
-				topPodName = args[0]
+				// enable GPU Metrics
+				showGpuMetric = true
+				topJobName = args[0]
+				job, err = searchTrainingJob(topJobName, "", namespace)
+				if err != nil {
+					fmt.Println(err)
+					os.Exit(1)
+				}
+				trainingType = job.Trainer()
 			}
 
-			for name, ns := range releaseMap {
-				if topPodName != "" {
-					if name != topPodName {
-						continue
-					}
+		printStart:
+			if showGpuMetric {
+				jobs = []TrainingJob{}
+				job, err = searchTrainingJob(topJobName, trainingType, namespace)
+				if err != nil {
+					fmt.Printf("Failed to show GPU metrics due to %v", err)
 				}
-				supportedChart := false
+				jobs = append(jobs, job)
+			} else {
+				if printNotStop {
+					fmt.Println("You must specify the job name when using `-r` flag")
+					os.Exit(1)
+				}
+
+				useCache = true
+				allPods, err = acquireAllPods(client)
+				if err != nil {
+					fmt.Println(err)
+					os.Exit(1)
+				}
+
+				allJobs, err = acquireAllJobs(client)
+				if err != nil {
+					fmt.Println(err)
+					os.Exit(1)
+				}
+				trainers := NewTrainers(client)
 				for _, trainer := range trainers {
-					if trainer.IsSupported(name, ns) {
-						job, err := trainer.GetTrainingJob(name, ns)
-						if err != nil {
-							fmt.Println(err)
-							os.Exit(1)
-						}
-						jobs = append(jobs, job)
-						supportedChart = true
-						break
+					trainingJobs, err := trainer.ListTrainingJobs()
+					if err != nil {
+						log.Errorf("Failed due to %v", err)
+						os.Exit(1)
 					}
+					jobs = append(jobs, trainingJobs...)
 				}
-
-				if !supportedChart {
-					log.Debugf("Unkown chart %s\n", name)
-				}
-
 			}
 
 			jobs = makeTrainingJobOrderdByGPUCount(jobs)
 			// TODO(cheyang): Support different job describer, such as MPI job/tf job describer
-			showGpuMetric := topPodName != ""
 			topTrainingJob(jobs, showGpuMetric, instanceName, printNotStop)
 			if printNotStop {
 				goto printStart
@@ -110,11 +117,12 @@ func NewTopJobCommand() *cobra.Command {
 		},
 	}
 
-	 command.Flags().BoolVarP(&printNotStop, "refresh", "r", false, "Display continuously")
-	 command.Flags().StringVarP(&instanceName, "instance", "i", "", "Display instance top info")
+	command.Flags().BoolVarP(&printNotStop, "refresh", "r", false, "Display continuously")
+	command.Flags().StringVarP(&instanceName, "instance", "i", "", "Display instance top info")
+	command.Flags().BoolVar(&allNamespaces, "allNamespaces", false, "show all the namespaces")
+
 	return command
 }
-
 
 func topTrainingJob(jobInfoList []TrainingJob, showSpecificJobMetric bool, instanceName string, notStop bool) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -140,7 +148,7 @@ func topTrainingJob(jobInfoList []TrainingJob, showSpecificJobMetric bool, insta
 			pods := jobInfo.AllPods()
 			gpuMetric, err := GetJobGpuMetric(clientset, jobInfo)
 			if err != nil {
-				log.Errorf("Failed Query job %s GPU metric, err: %++v", err)
+				log.Debug("Failed Query job %s GPU metric, err: %++v", jobInfo.Name(), err)
 				continue
 			}
 			for _, pod := range pods {
@@ -161,7 +169,7 @@ func topTrainingJob(jobInfoList []TrainingJob, showSpecificJobMetric bool, insta
 						status,
 						hostIP,
 					)
-				}else {
+				} else {
 					index := 0
 					keys := SortMapKeys(podMetric)
 					for _, gid := range keys {
@@ -175,16 +183,16 @@ func topTrainingJob(jobInfoList []TrainingJob, showSpecificJobMetric bool, insta
 							podName,
 							guid,
 							fmt.Sprintf("%.0f%%", gpuMetric.GpuDutyCycle),
-							fmt.Sprintf("%.1fMiB / %.1fMiB ", fromByteToMiB(gpuMetric.GpuMemoryUsed) ,  fromByteToMiB(gpuMetric.GpuMemoryTotal) ),
+							fmt.Sprintf("%.1fMiB / %.1fMiB ", fromByteToMiB(gpuMetric.GpuMemoryUsed), fromByteToMiB(gpuMetric.GpuMemoryTotal)),
 							status,
 							hostIP,
 						)
-						index ++
+						index++
 					}
 				}
 			}
 		}
-	}else {
+	} else {
 		for _, jobInfo := range jobInfoList {
 
 			hostIP := jobInfo.HostIPOfChief()
@@ -198,7 +206,7 @@ func topTrainingJob(jobInfoList []TrainingJob, showSpecificJobMetric bool, insta
 				strconv.FormatInt(allocatedGPU, 10),
 				jobInfo.GetStatus(),
 				jobInfo.Trainer(),
-				jobInfo.Age(),
+				util.ShortHumanDuration(jobInfo.Age()),
 				hostIP,
 			)
 		}

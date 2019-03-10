@@ -8,29 +8,34 @@ kubectl apply -f kubernetes-artifacts/prometheus/prometheus.yaml
 
 2\. Deploy GPU node exporter
 
-If your cluster is ACK (Alibaba Cloud Kubernetes) cluster, you can just exec command:
+* If your cluster is ACK (Alibaba Cloud Kubernetes) cluster, you can just exec command:
 
 ```
-kubectl apply -f kubernetes-artifacts/prometheus/gpu-expoter.yaml
+# change gpu export nodeSelector to aliyun label
+sed -i 's|accelerator/nvidia_gpu|aliyun.accelerator/nvidia_count|g' kubernetes-artifacts/prometheus/gpu-expoter.yaml
 ```
 
-If your cluster is not ACK cluster, exec command:
+* If your cluster is not ACK cluster, you need to label your GPU node:
 
 ```
 # label all your GPU nodes
-kubectl label node <your node> accelerator/nvidia_gpu=true
-# change gpu export nodeSelector to your label
-sed 's|aliyun.accelerator/nvidia_count|accelerator/nvidia_gpu|g' kubernetes-artifacts/prometheus/gpu-expoter.yaml
-# deploy gpu expoter
-kubectl apply -f kubernetes-artifacts/prometheus/gpu-expoter.yaml
+kubectl label node <your GPU node> accelerator/nvidia_gpu=true
 ```
+
+* Deploy gpu exporter
+
+```
+kubectl apply -f kubernetes-artifacts/prometheus/gpu-exporter.yaml
+```
+
+> Notice: the prometheus and gpu-exporter components should be deployed in namespace `kube-system`, and so that `arena top job <job name>` can work.
 
 3\. You can check the GPU metrics by prometheus SQL request
 
 ```
 # kubectl get --raw '/api/v1/namespaces/kube-system/services/prometheus-svc:prometheus/proxy/api/v1/query?query=nvidia_gpu_num_devices'
 
-{"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"nvidia_gpu_num_devices","app":"node-gpu-exporter","instance":"172.16.1.144:9445","job":"kubernetes-service-endpoints","k8s_app":"node-gpu-exporter","kubernetes_name":"node-gpu-exporter","node_name":"cn-huhehaote.i-hp3h7s9g7t89wdpxk320"},"value":[1543202894.919,"2"]}]}}
+{"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"nvidia_gpu_num_devices","app":"node-gpu-exporter","instance":"172.16.1.144:9445","job":"kubernetes-service-endpoints","k8s_app":"node-gpu-exporter","kubernetes_name":"node-gpu-exporter","node_name":"mynode"},"value":[1543202894.919,"2"]}]}}
 
 ```
 

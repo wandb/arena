@@ -15,11 +15,12 @@
 package commands
 
 import (
+	log "github.com/sirupsen/logrus"
 	batchv1 "k8s.io/api/batch/v1"
 	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/kubeflow/arena/util"
+	"time"
 )
 
 type JobInfo struct {
@@ -83,15 +84,37 @@ func (ji *JobInfo) AllocatedGPU() int64 {
 	return ji.allocatedGPU
 }
 
-func (ji *JobInfo) Age() string {
+func (ji *JobInfo) Age() time.Duration {
 	job := ji.job
 	if job.Status.StartTime == nil ||
 		job.Status.StartTime.IsZero() {
-		return "0s"
+		return 0
 	}
-	d := metav1.Now().Sub(job.Status.StartTime.Time)
+	return metav1.Now().Sub(job.Status.StartTime.Time)
+}
 
-	return util.ShortHumanDuration(d)
+// Get the Job Training Duration
+func (ji *JobInfo) Duration() time.Duration {
+	job := ji.job
+
+	if job.Status.StartTime == nil ||
+		job.Status.StartTime.IsZero() {
+		return 0
+	}
+	if job.Status.CompletionTime != nil {
+		return job.Status.CompletionTime.Time.Sub(job.Status.StartTime.Time)
+	}
+
+	if ji.GetStatus() == "FAILED" {
+		cond := getPodLatestCondition(ji.ChiefPod())
+		if !cond.LastTransitionTime.IsZero() {
+			return cond.LastTransitionTime.Time.Sub(job.Status.StartTime.Time)
+		} else {
+			log.Debugf("the latest condition's time is zero of pod %s", ji.ChiefPod().Name)
+		}
+	}
+
+	return metav1.Now().Sub(job.Status.StartTime.Time)
 }
 
 func (ji *JobInfo) StartTime() *metav1.Time {
@@ -119,4 +142,8 @@ func (ji *JobInfo) GetStatus() (status string) {
 		}
 	}
 	return status
+}
+
+func (ji *JobInfo) Namespace() string {
+	return ji.job.Namespace
 }

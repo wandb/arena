@@ -15,14 +15,14 @@
 package commands
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"os"
 	"strconv"
 	"time"
 
-	"github.com/kubeflow/arena/util"
+	"github.com/kubeflow/arena/pkg/util"
+	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -59,7 +59,7 @@ func NewLogsCommand() *cobra.Command {
 				fmt.Println(err)
 				os.Exit(1)
 			}
-			client, err := initKubeClient()
+			_, err = initKubeClient()
 			if err != nil {
 				fmt.Println(err)
 				os.Exit(1)
@@ -85,8 +85,15 @@ func NewLogsCommand() *cobra.Command {
 				}
 				printer.sinceSeconds = &parsedSince
 			}
+			err = updateNamespace(cmd)
+			if err != nil {
+				log.Debugf("Failed due to %v", err)
+				fmt.Println(err)
+				os.Exit(1)
+			}
+
 			// podName, err := getPodNameFromJob(printer.kubeClient, namespace, name)
-			job, err := getTrainingJob(client, name, namespace)
+			job, err := searchTrainingJob(name, trainingType, namespace)
 			if err != nil {
 				fmt.Println(err)
 				os.Exit(1)
@@ -124,6 +131,8 @@ func NewLogsCommand() *cobra.Command {
 			}
 		},
 	}
+
+	command.Flags().StringVar(&trainingType, "type", "", "The training type to show logging, the possible option is tfjob, mpijob, horovodjob or standalonejob. (optional)")
 
 	command.Flags().BoolVarP(&printer.follow, "follow", "f", false, "Specify if the logs should be streamed.")
 	command.Flags().StringVar(&since, "since", "", "Only return logs newer than a relative duration like 5s, 2m, or 3h. Defaults to all logs. Only one of since-time / since may be used.")
@@ -176,34 +185,11 @@ func (p *logPrinter) getPodLogs(displayName string, podName string, podNamespace
 		SinceTime:    sinceTime,
 		TailLines:    tail,
 	}).Stream()
-	// if err == nil {
-	// 	scanner := bufio.NewScanner(stream)
-	// 	for scanner.Scan() {
-	// 		line := scanner.Text()
-	// 		parts := strings.Split(line, " ")
-	// 		logTime, err := time.Parse(time.RFC3339, parts[0])
-	// 		if err == nil {
-	// 			lines := strings.Join(parts[1:], " ")
-	// 			for _, line := range strings.Split(lines, "\r") {
-	// 				if line != "" {
-	// 					callback(logEntry{
-	// 						pod:         podName,
-	// 						displayName: displayName,
-	// 						time:        logTime,
-	// 						line:        line,
-	// 					})
-	// 				}
-	// 			}
-	// 		}
-	// 	}
-	// }
 
 	if err != nil {
 		return err
 	}
-	writer := bufio.NewWriter(os.Stdout)
-	defer writer.Flush()
-	_, err = io.Copy(writer, readCloser)
+	_, err = io.Copy(os.Stdout, readCloser)
 
 	defer readCloser.Close()
 	return err

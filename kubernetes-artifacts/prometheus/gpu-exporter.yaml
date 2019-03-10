@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: node-gpu-exporter
+  namespace: arena-system
 spec:
   selector:
     matchLabels:
@@ -16,7 +17,7 @@ spec:
           requiredDuringSchedulingIgnoredDuringExecution:
             nodeSelectorTerms:
             - matchExpressions:
-              - key: aliyun.accelerator/nvidia_count
+              - key: accelerator/nvidia_gpu
                 operator: Exists
       hostPID: true
       containers:
@@ -58,6 +59,7 @@ metadata:
   annotations:
     prometheus.io/scrape: 'true'
   name: node-gpu-exporter
+  namespace: arena-system
   labels:
     app: node-gpu-exporter
     k8s-app: node-gpu-exporter

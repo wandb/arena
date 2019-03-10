@@ -20,10 +20,9 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/kubeflow/arena/util"
+	"github.com/kubeflow/arena/pkg/util"
 	log "github.com/sirupsen/logrus"
 
-	"github.com/kubeflow/arena/util/helm"
 	"github.com/spf13/cobra"
 
 	"io"
@@ -54,29 +53,30 @@ func NewGetCommand() *cobra.Command {
 
 			util.SetLogLevel(logLevel)
 			setupKubeconfig()
-			client, err := initKubeClient()
+			_, err := initKubeClient()
 			if err != nil {
 				fmt.Println(err)
 				os.Exit(1)
 			}
-			exist, err := helm.CheckRelease(name)
+
+			err = updateNamespace(cmd)
+			if err != nil {
+				log.Debugf("Failed due to %v", err)
+				fmt.Println(err)
+				os.Exit(1)
+			}
+
+			job, err := searchTrainingJob(name, trainingType, namespace)
 			if err != nil {
 				fmt.Println(err)
 				os.Exit(1)
 			}
-			if !exist {
-				fmt.Printf("The job %s doesn't exist, please create it first. use 'arena submit'\n", name)
-				os.Exit(1)
-			}
-			job, err := getTrainingJob(client, name, namespace)
-			if err != nil {
-				fmt.Println(err)
-				os.Exit(1)
-			}
+
 			printTrainingJob(job, printArgs)
 		},
 	}
 
+	command.Flags().StringVar(&trainingType, "type", "", "The training type to delete, the possible option is tfjob, mpijob, horovodjob or standalonejob. (optional)")
 	command.Flags().BoolVarP(&printArgs.ShowEvents, "events", "e", false, "Specify if show pending pod's events.")
 	command.Flags().StringVarP(&printArgs.Output, "output", "o", "", "Output format. One of: json|yaml|wide")
 	return command
@@ -84,7 +84,51 @@ func NewGetCommand() *cobra.Command {
 
 type PrintArgs struct {
 	ShowEvents bool
-	Output string
+	Output     string
+}
+
+/*
+* search the training job with name and training type
+ */
+func searchTrainingJob(jobName, trainingType, namespace string) (job TrainingJob, err error) {
+	if len(trainingType) > 0 {
+		if isKnownTrainingType(trainingType) {
+			job, err = getTrainingJobByType(clientset, jobName, namespace, trainingType)
+			if err != nil {
+				if isTrainingConfigExist(jobName, trainingType, namespace) {
+					log.Warningf("Failed to get the training job %s, but the trainer config is found, please clean it by using 'arena delete %s --type %s'.",
+						jobName,
+						jobName,
+						trainingType)
+				}
+				return nil, err
+			}
+		} else {
+			return nil, fmt.Errorf("%s is unknown training type, please choose a known type from %v",
+				trainingType,
+				knownTrainingTypes)
+		}
+	} else {
+		jobs, err := getTrainingJobsByName(clientset, jobName, namespace)
+		if err != nil {
+			if len(getTrainingTypes(jobName, namespace)) > 0 {
+				log.Warningf("Failed to get the training job %s, but the trainer config is found, please clean it by using 'arena delete %s'.",
+					jobName,
+					jobName)
+			}
+			return nil, err
+		}
+
+		if len(jobs) > 1 {
+			return nil, fmt.Errorf("There are more than 1 training jobs with the same name %s, please check it with `arena list | grep %s`",
+				jobName,
+				jobName)
+		} else {
+			job = jobs[0]
+		}
+	}
+
+	return job, nil
 }
 
 func getTrainingJob(client *kubernetes.Clientset, name, namespace string) (job TrainingJob, err error) {
@@ -100,6 +144,48 @@ func getTrainingJob(client *kubernetes.Clientset, name, namespace string) (job T
 	}
 
 	return nil, fmt.Errorf("Failed to find the training job %s in namespace %s", name, namespace)
+}
+
+func getTrainingJobByType(client *kubernetes.Clientset, name, namespace, trainingType string) (job TrainingJob, err error) {
+	// trainers := NewTrainers(client, )
+
+	trainers := NewTrainers(client)
+	for _, trainer := range trainers {
+		if trainer.Type() == trainingType {
+			return trainer.GetTrainingJob(name, namespace)
+		} else {
+			log.Debugf("the job %s with type %s in namespace %s is not expected type %v",
+				name,
+				trainer.Type(),
+				namespace,
+				trainingType)
+		}
+	}
+
+	return nil, fmt.Errorf("Failed to find the training job %s in namespace %s", name, namespace)
+}
+
+func getTrainingJobsByName(client *kubernetes.Clientset, name, namespace string) (jobs []TrainingJob, err error) {
+	jobs = []TrainingJob{}
+	trainers := NewTrainers(client)
+	for _, trainer := range trainers {
+		if trainer.IsSupported(name, namespace) {
+			job, err := trainer.GetTrainingJob(name, namespace)
+			if err != nil {
+				return nil, err
+			}
+			jobs = append(jobs, job)
+		} else {
+			log.Debugf("the job %s in namespace %s is not supported by %v", name, namespace, trainer.Type())
+		}
+	}
+
+	if len(jobs) == 0 {
+		log.Debugf("Failed to find the training job %s in namespace %s", name, namespace)
+		return nil, fmt.Errorf("The job %s in namespace %s doesn't exist, please create it first. use 'arena submit'\n", name, namespace)
+	}
+
+	return jobs, nil
 }
 
 func printTrainingJob(job TrainingJob, printArgs PrintArgs) {
@@ -122,6 +208,7 @@ func printTrainingJob(job TrainingJob, printArgs PrintArgs) {
 
 func printSingleJobHelper(job TrainingJob, printArgs PrintArgs) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	printJobSummary(w, job)
 
 	// apply a dummy FgDefault format to align tabwriter with the rest of the columns
 
@@ -138,7 +225,7 @@ func printSingleJobHelper(job TrainingJob, printArgs PrintArgs) {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", job.Name(),
 			strings.ToUpper(string(pod.Status.Phase)),
 			strings.ToUpper(job.Trainer()),
-			job.Age(),
+			util.ShortHumanDuration(job.Age()),
 			pod.Name,
 			hostIP)
 	}
@@ -157,6 +244,14 @@ func printSingleJobHelper(job TrainingJob, printArgs PrintArgs) {
 	}
 
 	_ = w.Flush()
+
+}
+
+func printJobSummary(w io.Writer, job TrainingJob) {
+	fmt.Fprintf(w, "STATUS: %s\n", GetJobRealStatus(job))
+	fmt.Fprintf(w, "NAMESPACE: %s\n", job.Namespace())
+	fmt.Fprintf(w, "TRAINING DURATION: %s\n", util.ShortHumanDuration(job.Duration()))
+	fmt.Fprintln(w, "")
 
 }
 

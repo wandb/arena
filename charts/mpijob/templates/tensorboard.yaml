@@ -3,7 +3,7 @@
 apiVersion: extensions/v1beta1
 kind: Deployment
 metadata:
-  name: {{ template "mpijob.fullname" . }}
+  name: {{ .Release.Name }}-tensorboard
   labels:
     app: {{ template "mpijob.name" . }}
     chart: {{ template "mpijob.chart" . }}
@@ -20,6 +20,11 @@ spec:
         release: {{ .Release.Name }}
         role: tensorboard
     spec:
+      {{- if .Values.launcherOnMaster }}
+      tolerations:
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/master
+      {{- end }}
       affinity:
         podAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -28,17 +33,25 @@ spec:
               - key: mpi_job_name
                 operator: In
                 values: 
-                  - {{ template "mpijob.fullname" . }}
+                  - {{ .Release.Name }}
               - key: statefulset.kubernetes.io/pod-name
                 operator: In
                 values: 
-                  - {{ template "mpijob.fullname" . }}-worker-0
+                  - {{ .Release.Name }}-worker-0
             topologyKey: kubernetes.io/hostname
       volumes:
         {{- if .Values.isLocalLogging }}
         - hostPath:
             path: "{{ .Values.hostLogPath }}"
           name: training-logs-volume
+        {{- else }}
+        {{- if .Values.dataset }}   
+        {{- range $pvcName, $destPath := .Values.dataset }}
+        - name: "{{ $pvcName }}"
+          persistentVolumeClaim:
+            claimName: "{{ $pvcName }}"
+        {{- end }}
+        {{- end }}
         {{- end }}
       containers:
       - name: tensorboard   
@@ -55,5 +68,12 @@ spec:
         {{- if .Values.isLocalLogging }}
         - mountPath: /output/training_logs
           name: training-logs-volume
+        {{- else }}
+        {{- if .Values.dataset }}   
+        {{- range $pvcName, $destPath := .Values.dataset }}
+        - name: "{{ $pvcName }}"
+          mountPath: "{{ $destPath }}"
+        {{- end }}
+        {{- end }}
         {{- end }}
 {{- end }}

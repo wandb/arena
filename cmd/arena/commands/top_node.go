@@ -51,7 +51,7 @@ func NewTopNodeCommand() *cobra.Command {
 				fmt.Println(err)
 				os.Exit(1)
 			}
-			allPods, err := acquireAllActivePods(client)
+			allPods, err = acquireAllActivePods(client)
 			if err != nil {
 				fmt.Println(err)
 				os.Exit(1)
@@ -187,7 +187,12 @@ func displayTopNodeDetails(nodeInfos []NodeInfo) {
 
 		address := "unknown"
 		if len(nodeInfo.node.Status.Addresses) > 0 {
-			address = nodeInfo.node.Status.Addresses[0].Address
+			//address = nodeInfo.node.Status.Addresses[0].Address
+			for _, addr := range nodeInfo.node.Status.Addresses {
+				if addr.Type == v1.NodeInternalIP {
+					address = addr.Address
+				}
+			}
 		}
 
 		role := strings.Join(findNodeRoles(&nodeInfo.node), ",")

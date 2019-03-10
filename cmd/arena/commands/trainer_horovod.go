@@ -17,6 +17,7 @@ package commands
 import (
 	"fmt"
 
+	"github.com/kubeflow/arena/pkg/types"
 	log "github.com/sirupsen/logrus"
 	batchv1 "k8s.io/api/batch/v1"
 	"k8s.io/api/core/v1"
@@ -47,7 +48,16 @@ func (hj *HorovodJob) AllPods() []v1.Pod {
 // Get Dashboard url of the job
 func (hj *HorovodJob) GetJobDashboards(client *kubernetes.Clientset) ([]string, error) {
 	urls := []string{}
-	dashboardURL, err := dashboard(client, arenaNamespace, "kubernetes-dashboard")
+	dashboardURL, err := dashboard(client, namespace, "kubernetes-dashboard")
+
+	if err != nil {
+		log.Debugf("Get dashboard failed due to %v", err)
+		// retry for the existing customers, will be deprecated in the future
+		dashboardURL, err = dashboard(client, arenaNamespace, "kubernetes-dashboard")
+		if err != nil {
+			log.Debugf("Get dashboard failed due to %v", err)
+		}
+	}
 
 	if err != nil {
 		log.Debugf("Get dashboard failed due to %v", err)
@@ -98,7 +108,7 @@ func NewHorovodJobTrainer(client *kubernetes.Clientset) Trainer {
 
 	return &HorovodJobTrainer{
 		client:      client,
-		trainerType: "Horovod",
+		trainerType: "horovodjob",
 	}
 }
 
@@ -106,7 +116,7 @@ func NewHorovodJobTrainer(client *kubernetes.Clientset) Trainer {
 func (m *HorovodJobTrainer) IsSupported(name, ns string) bool {
 	isHorovod := false
 
-	if len(allJobs) > 0 {
+	if useCache {
 		for _, job := range allJobs {
 			if isHorovodJob(name, ns, job) {
 				isHorovod = true
@@ -115,7 +125,7 @@ func (m *HorovodJobTrainer) IsSupported(name, ns string) bool {
 			}
 		}
 	} else {
-		jobList, err := m.client.BatchV1().Jobs(namespace).List(metav1.ListOptions{
+		jobList, err := m.client.BatchV1().Jobs(ns).List(metav1.ListOptions{
 			TypeMeta: metav1.TypeMeta{
 				Kind:       "ListOptions",
 				APIVersion: "v1",
@@ -138,7 +148,7 @@ func (m *HorovodJobTrainer) Type() string {
 }
 
 func (m *HorovodJobTrainer) GetTrainingJob(name, namespace string) (tj TrainingJob, err error) {
-	if len(allPods) > 0 {
+	if useCache {
 		tj, err = m.getTrainingJobFromCache(name, namespace)
 	} else {
 		tj, err = m.getTrainingJob(name, namespace)
@@ -305,6 +315,42 @@ func (m *HorovodJobTrainer) getTrainingJobFromCache(name, ns string) (TrainingJo
 			trainerType: m.Type(),
 		},
 	}, nil
+}
+
+/**
+* List Training jobs
+ */
+func (hj *HorovodJobTrainer) ListTrainingJobs() (jobs []TrainingJob, err error) {
+	jobs = []TrainingJob{}
+	jobInfos := []types.TrainingJobInfo{}
+innerLoop:
+	for _, horovodJob := range allJobs {
+		jobInfo := types.TrainingJobInfo{}
+
+		log.Debugf("find horovodJob %s in %s", horovodJob.Name, horovodJob.Namespace)
+		if val, ok := horovodJob.Labels["release"]; ok && (horovodJob.Name == fmt.Sprintf("%s-tf-horovod-job", val)) {
+			log.Debugf("the horovodJob %s with labels %s found in List", horovodJob.Name, val)
+			jobInfo.Name = val
+		} else {
+			log.Debugf("the jobs %s with labels %s is not horovodJob in List", horovodJob.Name, val)
+			continue innerLoop
+		}
+
+		jobInfo.Namespace = horovodJob.Namespace
+		jobInfos = append(jobInfos, jobInfo)
+		// jobInfos = append(jobInfos, types.TrainingJobInfo{Name: horovodJob.})
+	}
+	log.Debugf("jobInfos %v", jobInfos)
+
+	for _, jobInfo := range jobInfos {
+		job, err := hj.getTrainingJobFromCache(jobInfo.Name, jobInfo.Namespace)
+		if err != nil {
+			return jobs, err
+		}
+		jobs = append(jobs, job)
+	}
+
+	return jobs, nil
 }
 
 func isHorovodJob(name, ns string, item batchv1.Job) bool {

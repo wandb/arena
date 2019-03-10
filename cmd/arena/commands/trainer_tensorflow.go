@@ -16,13 +16,17 @@ package commands
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
-	"github.com/kubeflow/arena/util"
+	"github.com/kubeflow/arena/pkg/types"
 	"github.com/kubeflow/tf-operator/pkg/client/clientset/versioned"
 	log "github.com/sirupsen/logrus"
 	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+
+	"time"
 
 	tfv1alpha2 "github.com/kubeflow/tf-operator/pkg/apis/tensorflow/v1alpha2"
 )
@@ -81,20 +85,16 @@ func (tj *TensorFlowJob) AllPods() []v1.Pod {
 
 // Get the Status of the Job: RUNNING, PENDING, SUCCEEDED, FAILED
 func (tj *TensorFlowJob) GetStatus() (status string) {
-	status = "UNKNOWN"
+	status = "PENDING"
 	if tj.tfjob.Name == "" {
 		return status
 	}
-	if isSucceeded(tj.tfjob.Status) {
-		status = "SUCCEEDED"
-	} else if isFailed(tj.tfjob.Status) {
-		status = "FAILED"
-	} else if isRunning(tj.tfjob.Status) {
-		status = "RUNNING"
-	} else if isPending(tj.tfjob.Status) {
+
+	t := checkStatus(tj.tfjob.Status)
+	if t == tfv1alpha2.TFJobCreated || t == tfv1alpha2.TFJobRestarting {
 		status = "PENDING"
 	} else {
-		status = "UNKNOWN"
+		status = strings.ToUpper(string(t))
 	}
 
 	return status
@@ -104,24 +104,60 @@ func (tj *TensorFlowJob) StartTime() *metav1.Time {
 	return tj.tfjob.Status.StartTime
 }
 
+func (tj *TensorFlowJob) Namespace() string {
+	return tj.tfjob.Namespace
+}
+
 // Get the Job Age
-func (tj *TensorFlowJob) Age() string {
+func (tj *TensorFlowJob) Age() time.Duration {
 	job := tj.tfjob
 
 	if job.Status.StartTime == nil ||
 		job.Status.StartTime.IsZero() {
-		return "0s"
+		return 0
 	}
-	d := metav1.Now().Sub(job.Status.StartTime.Time)
+	return metav1.Now().Sub(job.Status.StartTime.Time)
+}
 
-	return util.ShortHumanDuration(d)
+// Get the Job Training Duration
+func (tj *TensorFlowJob) Duration() time.Duration {
+	job := tj.tfjob
+
+	if job.Status.StartTime == nil ||
+		job.Status.StartTime.IsZero() {
+		return 0
+	}
+
+	if !job.Status.CompletionTime.IsZero() {
+		return job.Status.CompletionTime.Time.Sub(job.Status.StartTime.Time)
+	}
+
+	if tj.GetStatus() == "FAILED" {
+		cond := getPodLatestCondition(tj.chiefPod)
+		if !cond.LastTransitionTime.IsZero() {
+			return cond.LastTransitionTime.Time.Sub(job.Status.StartTime.Time)
+		} else {
+			log.Debugf("the latest condition's time is zero of pod %s", tj.chiefPod.Name)
+		}
+	}
+
+	return metav1.Now().Sub(job.Status.StartTime.Time)
 }
 
 // Get Dashboard url of the job
 func (tj *TensorFlowJob) GetJobDashboards(client *kubernetes.Clientset) ([]string, error) {
 	urls := []string{}
 	// dashboardURL, err := dashboard(client, "kubeflow", "tf-job-dashboard")
-	dashboardURL, err := dashboard(client, arenaNamespace, "tf-job-dashboard")
+	dashboardURL, err := dashboard(client, namespace, "tf-job-dashboard")
+
+	if err != nil {
+		log.Debugf("Get dashboard failed due to %v", err)
+		// retry for the existing customers, will be deprecated in the future
+		dashboardURL, err = dashboard(client, arenaNamespace, "tf-job-dashboard")
+		if err != nil {
+			log.Debugf("Get dashboard failed due to %v", err)
+		}
+	}
 
 	if err != nil {
 		log.Debugf("Get dashboard failed due to %v", err)
@@ -199,8 +235,13 @@ func NewTensorFlowJobTrainer(client *kubernetes.Clientset) Trainer {
 		}
 	}
 	// allPods have been cached, we do the same to allTfjobs
-	if len(allPods) > 0 {
-		tfjobList, err := tfjobClient.KubeflowV1alpha2().TFJobs(metav1.NamespaceAll).List(metav1.ListOptions{})
+	if useCache {
+		ns := namespace
+		if allNamespaces {
+			ns = metav1.NamespaceAll
+		}
+
+		tfjobList, err := tfjobClient.KubeflowV1alpha2().TFJobs(ns).List(metav1.ListOptions{})
 		if err != nil {
 			log.Debugf("unsupported tfjobs due to %v", err)
 			return &TensorFlowJobTrainer{
@@ -234,7 +275,7 @@ func (tt *TensorFlowJobTrainer) IsSupported(name, ns string) bool {
 
 	isTensorFlow := false
 
-	if len(allTfjobs) > 0 {
+	if useCache {
 		for _, job := range allTfjobs {
 			if tt.isTensorFlowJob(name, ns, job) {
 				isTensorFlow = true
@@ -243,7 +284,7 @@ func (tt *TensorFlowJobTrainer) IsSupported(name, ns string) bool {
 			}
 		}
 	} else {
-		tfjobList, err := tt.tfjobClient.KubeflowV1alpha2().TFJobs(namespace).List(metav1.ListOptions{
+		tfjobList, err := tt.tfjobClient.KubeflowV1alpha2().TFJobs(ns).List(metav1.ListOptions{
 			LabelSelector: fmt.Sprintf("release=%s", name),
 		})
 
@@ -260,7 +301,7 @@ func (tt *TensorFlowJobTrainer) IsSupported(name, ns string) bool {
 }
 
 func (tt *TensorFlowJobTrainer) GetTrainingJob(name, namespace string) (tj TrainingJob, err error) {
-	if len(allTfjobs) > 0 {
+	if useCache {
 		tj, err = tt.getTrainingJobFromCache(name, namespace)
 	} else {
 		tj, err = tt.getTrainingJob(name, namespace)
@@ -271,8 +312,7 @@ func (tt *TensorFlowJobTrainer) GetTrainingJob(name, namespace string) (tj Train
 
 func (tt *TensorFlowJobTrainer) getTrainingJob(name, namespace string) (TrainingJob, error) {
 	var (
-		chiefPod v1.Pod
-		tfjob    tfv1alpha2.TFJob
+		tfjob tfv1alpha2.TFJob
 	)
 
 	// 1. Get the batchJob of training Job
@@ -291,6 +331,9 @@ func (tt *TensorFlowJobTrainer) getTrainingJob(name, namespace string) (Training
 		tfjob = tfjobList.Items[0]
 	}
 
+	// Sort tfjob status conditions and make the newest condition at first
+	tfjob.Status.Conditions = makeJobStatusSortedByTime(tfjob.Status.Conditions)
+
 	// 2. Find the pod list, and determine the pod of the job
 	podList, err := tt.client.CoreV1().Pods(namespace).List(metav1.ListOptions{
 		TypeMeta: metav1.TypeMeta{
@@ -302,19 +345,7 @@ func (tt *TensorFlowJobTrainer) getTrainingJob(name, namespace string) (Training
 	if err != nil {
 		return nil, err
 	}
-
-	for _, item := range podList.Items {
-		if !tt.isTensorFlowPod(name, namespace, item) {
-			continue
-		}
-		if tt.isChiefPod(tfjob, item) {
-			chiefPod = item
-		}
-
-		// for non-job pod, add it into the pod list
-		pods = append(pods, item)
-		log.Debugf("add pod %v to pods", item)
-	}
+	pods, chiefPod := getPodsOfTFJob(name, tt, tfjob, podList.Items)
 
 	return &TensorFlowJob{
 		tfjob:       tfjob,
@@ -330,11 +361,8 @@ func (tt *TensorFlowJobTrainer) getTrainingJob(name, namespace string) (Training
 func (tt *TensorFlowJobTrainer) getTrainingJobFromCache(name, ns string) (TrainingJob, error) {
 
 	var (
-		chiefPod v1.Pod
-		tfjob    tfv1alpha2.TFJob
+		tfjob tfv1alpha2.TFJob
 	)
-
-	pods := []v1.Pod{}
 
 	// 1. Find the batch job
 	for _, item := range allTfjobs {
@@ -343,22 +371,9 @@ func (tt *TensorFlowJobTrainer) getTrainingJobFromCache(name, ns string) (Traini
 			break
 		}
 	}
-
+	tfjob.Status.Conditions = makeJobStatusSortedByTime(tfjob.Status.Conditions)
 	// 2. Find the pods, and determine the pod of the job
-	for _, item := range allPods {
-
-		if !tt.isTensorFlowPod(name, ns, item) {
-			continue
-		}
-		if tt.isChiefPod(tfjob, item) {
-			chiefPod = item
-		}
-
-		// for non-job pod, add it into the pod list
-		pods = append(pods, item)
-		log.Debugf("add pod %v to pods", item)
-
-	}
+	pods, chiefPod := getPodsOfTFJob(name, tt, tfjob, allPods)
 
 	return &TensorFlowJob{
 		tfjob:       tfjob,
@@ -418,7 +433,6 @@ func (tt *TensorFlowJobTrainer) isTensorFlowJob(name, ns string, item tfv1alpha2
 }
 
 func (tt *TensorFlowJobTrainer) isTensorFlowPod(name, ns string, item v1.Pod) bool {
-
 	if val, ok := item.Labels["release"]; ok && (val == name) {
 		log.Debugf("the tfjob %s with labels %s", item.Name, val)
 	} else {
@@ -443,6 +457,68 @@ func (tt *TensorFlowJobTrainer) isTensorFlowPod(name, ns string, item v1.Pod) bo
 	return true
 }
 
+/**
+* List Training jobs
+ */
+func (tt *TensorFlowJobTrainer) ListTrainingJobs() (jobs []TrainingJob, err error) {
+	jobs = []TrainingJob{}
+	jobInfos := []types.TrainingJobInfo{}
+	for _, tfjob := range allTfjobs {
+		jobInfo := types.TrainingJobInfo{}
+		log.Debugf("find tfjob %s in %s", tfjob.Name, tfjob.Namespace)
+		if val, ok := tfjob.Labels["release"]; ok && (tfjob.Name == fmt.Sprintf("%s-%s", val, tt.Type())) {
+			log.Debugf("the tfjob %s with labels %s found in List", tfjob.Name, val)
+			jobInfo.Name = val
+		} else {
+			jobInfo.Name = tfjob.Name
+		}
+
+		jobInfo.Namespace = tfjob.Namespace
+		jobInfos = append(jobInfos, jobInfo)
+		// jobInfos = append(jobInfos, types.TrainingJobInfo{Name: tfjob.})
+	}
+	log.Debugf("jobInfos %v", jobInfos)
+
+	for _, jobInfo := range jobInfos {
+		job, err := tt.getTrainingJobFromCache(jobInfo.Name, jobInfo.Namespace)
+		if err != nil {
+			return jobs, err
+		}
+		jobs = append(jobs, job)
+	}
+
+	return jobs, nil
+}
+
+type orderedTrainingJobConditionsByTime []tfv1alpha2.TFJobCondition
+
+func (t orderedTrainingJobConditionsByTime) Len() int {
+	return len(t)
+}
+
+func (t orderedTrainingJobConditionsByTime) Less(i, j int) bool {
+	if t[i].LastUpdateTime.IsZero() {
+		return true
+	} else if t[j].LastUpdateTime.IsZero() {
+		return false
+	}
+
+	return t[i].LastUpdateTime.After(t[j].LastUpdateTime.Time)
+}
+
+func (t orderedTrainingJobConditionsByTime) Swap(i, j int) {
+	t[i], t[j] = t[j], t[i]
+}
+
+func makeJobStatusSortedByTime(conditions []tfv1alpha2.TFJobCondition) []tfv1alpha2.TFJobCondition {
+	newConditions := make(orderedTrainingJobConditionsByTime, 0, len(conditions))
+	for _, c := range conditions {
+		newConditions = append(newConditions, c)
+	}
+	sort.Sort(newConditions)
+	return []tfv1alpha2.TFJobCondition(newConditions)
+}
+
 func hasCondition(status tfv1alpha2.TFJobStatus, condType tfv1alpha2.TFJobConditionType) bool {
 	for _, condition := range status.Conditions {
 		if condition.Type == condType && condition.Status == v1.ConditionTrue {
@@ -452,21 +528,34 @@ func hasCondition(status tfv1alpha2.TFJobStatus, condType tfv1alpha2.TFJobCondit
 	return false
 }
 
-func isSucceeded(status tfv1alpha2.TFJobStatus) bool {
-	return hasCondition(status, tfv1alpha2.TFJobSucceeded)
-}
-
-func isFailed(status tfv1alpha2.TFJobStatus) bool {
-	return hasCondition(status, tfv1alpha2.TFJobFailed)
-}
-
-func isRunning(status tfv1alpha2.TFJobStatus) bool {
-	return hasCondition(status, tfv1alpha2.TFJobRunning)
-}
-
-func isPending(status tfv1alpha2.TFJobStatus) bool {
-	if status.Conditions == nil {
-		return true
+func checkStatus(status tfv1alpha2.TFJobStatus) tfv1alpha2.TFJobConditionType {
+	t := tfv1alpha2.TFJobConditionType("Pending")
+	for _, condition := range status.Conditions {
+		if condition.Status == v1.ConditionTrue {
+			t = condition.Type
+			break
+		}
 	}
-	return hasCondition(status, tfv1alpha2.TFJobCreated) || hasCondition(status, tfv1alpha2.TFJobRestarting)
+	return t
+}
+
+func getPodsOfTFJob(name string, tt *TensorFlowJobTrainer, tfjob tfv1alpha2.TFJob, podList []v1.Pod) (pods []v1.Pod, chiefPod v1.Pod) {
+	pods = []v1.Pod{}
+	for _, item := range podList {
+		if !tt.isTensorFlowPod(name, namespace, item) {
+			continue
+		}
+		if tt.isChiefPod(tfjob, item) && item.CreationTimestamp.After(chiefPod.CreationTimestamp.Time) {
+			// If there are some failed chiefPod, and the new chiefPod haven't started, set the latest failed pod as chief pod
+			if chiefPod.Name != "" && item.Status.Phase == v1.PodPending {
+				continue
+			}
+			chiefPod = item
+		}
+
+		// for non-job pod, add it into the pod list
+		pods = append(pods, item)
+		log.Debugf("add pod %v to pods", item)
+	}
+	return pods, chiefPod
 }

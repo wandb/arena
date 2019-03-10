@@ -18,10 +18,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"github.com/spf13/cobra"
 	"regexp"
+
+	validate "github.com/kubeflow/arena/pkg/util"
 	log "github.com/sirupsen/logrus"
-	validate "github.com/kubeflow/arena/util"
+	"github.com/spf13/cobra"
 )
 
 var (
@@ -30,9 +31,8 @@ var (
 )
 
 type ServeArgs struct {
-	Image           string            `yaml:"image"`           // --image
 	ImagePullPolicy string            `yaml:"imagePullPolicy"` // --imagePullPolicy
-	GPUCount        int               `yaml:"gpuCount"`            // --gpus
+	GPUCount        int               `yaml:"gpuCount"`        // --gpus
 	Cpu             string            `yaml:"cpu"`             // --cpu
 	Memory          string            `yaml:"memory"`          // --memory
 	Envs            map[string]string `yaml:"envs"`            // --envs
@@ -92,7 +92,6 @@ func ParseMountPath(dataset []string) (err error) {
 func (serveArgs *ServeArgs) addServeCommonFlags(command *cobra.Command) {
 
 	// create subcommands
-	command.Flags().StringVar(&serveArgs.Image, "image", defaultTfServingImage, "the docker image name of serve job, and the default image is "+defaultTfServingImage)
 	command.Flags().StringVar(&serveArgs.ImagePullPolicy, "imagePullPolicy", "IfNotPresent", "the policy to pull the image, and the default policy is IfNotPresent")
 	command.Flags().StringVar(&serveArgs.Command, "command", "", "the command will inject to container's command.")
 	command.Flags().IntVar(&serveArgs.GPUCount, "gpus", 0, "the limit GPU count of each replica to run the serve.")
@@ -136,6 +135,7 @@ func NewServeCommand() *cobra.Command {
 		},
 	}
 
+	command.AddCommand(NewServingTensorRTCommand())
 	command.AddCommand(NewServingTensorFlowCommand())
 	command.AddCommand(NewServingListCommand())
 	command.AddCommand(NewServingDeleteCommand())

@@ -35,6 +35,7 @@ var (
 	loadingRules *clientcmd.ClientConfigLoadingRules
 	logLevel     string
 	enablePProf  bool
+	enableTrace  bool
 )
 
 // NewCommand returns a new instance of an Arena command
@@ -56,11 +57,13 @@ func NewCommand() *cobra.Command {
 	// enable logging
 	command.PersistentFlags().StringVar(&logLevel, "loglevel", "info", "Set the logging level. One of: debug|info|warn|error")
 	command.PersistentFlags().BoolVar(&enablePProf, "pprof", false, "enable cpu profile")
+	command.PersistentFlags().BoolVar(&enableTrace, "trace", false, "enable trace")
 	command.PersistentFlags().StringVar(&arenaNamespace, "arenaNamespace", "arena-system", "The namespace of arena system service, like TFJob")
 
 	command.AddCommand(NewSubmitCommand())
 	command.AddCommand(NewServeCommand())
 	command.AddCommand(NewListCommand())
+	command.AddCommand(NewPruneCommand())
 	command.AddCommand(NewGetCommand())
 	command.AddCommand(NewLogViewerCommand())
 	command.AddCommand(NewLogsCommand())
@@ -82,7 +85,7 @@ func addKubectlFlagsToCmd(cmd *cobra.Command) {
 	overrides := clientcmd.ConfigOverrides{}
 	// kflags := clientcmd.RecommendedConfigOverrideFlags("")
 	cmd.PersistentFlags().StringVar(&loadingRules.ExplicitPath, "config", "", "Path to a kube config. Only required if out-of-cluster")
-	cmd.PersistentFlags().StringVar(&namespace, "namespace", "default", "the namespace of the job")
+	cmd.PersistentFlags().StringVarP(&namespace, "namespace", "n", "default", "the namespace of the job")
 	// clientcmd.BindOverrideFlags(&overrides, cmd.PersistentFlags(), kflags)
 	clientConfig = clientcmd.NewInteractiveDeferredLoadingClientConfig(loadingRules, &overrides, os.Stdin)
 }

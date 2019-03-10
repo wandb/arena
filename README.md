@@ -12,6 +12,7 @@ Meanwhile, the end users require GPU resource and node management. Arena also pr
 
 In one word, Arena's goal is to make the data scientists feel like to work on a single machine but with the Power of GPU clusters indeed.
 
+For the Chinese version, please refer to [中文文档](README_cn.md)
 
 ## Setup
 
@@ -29,6 +30,7 @@ Arena is a command-line interface to run and monitor the machine learning traini
 - [6. Run a distributed TensorFlow training job with gang scheduler](docs/userguide/6-tfjob-gangschd.md)
 - [7. Run TensorFlow Serving](docs/userguide/7-tf-serving.md)
 - [8. Run TensorFlow Estimator](docs/userguide/8-tfjob-estimator.md)
+- [9. Monitor GPUs of the training job ](docs/userguide/9-top-job-gpu-metric.md)
 
 ## Demo
 
@@ -49,7 +51,21 @@ cd arena
 make
 ```
 
-`arena` binary is located in directory `arena/bin`. You may want add the directory to `$PATH`.
+`arena` binary is located in directory `arena/bin`. You may want to add the directory to `$PATH`.
+
+## CPU Profiling
+
+```
+# set profile rate (HZ)
+export PROFILE_RATE=1000
+
+# arena {command} --pprof
+arena list --pprof
+INFO[0000] Dump cpu profile file into /tmp/cpu_profile
+```
+
+Then you can analyze the profile by following [Go CPU profiling: pprof and speedscope](https://coder.today/go-profiling-pprof-and-speedscope-b05b812cc429)
+
 
 ## CLI Document
 

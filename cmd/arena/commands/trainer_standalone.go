@@ -17,6 +17,7 @@ package commands
 import (
 	"fmt"
 
+	"github.com/kubeflow/arena/pkg/types"
 	log "github.com/sirupsen/logrus"
 	batchv1 "k8s.io/api/batch/v1"
 	"k8s.io/api/core/v1"
@@ -33,7 +34,16 @@ type StandaloneJob struct {
 func (sj *StandaloneJob) GetJobDashboards(client *kubernetes.Clientset) ([]string, error) {
 	urls := []string{}
 	// dashboardURL, err := dashboard(client, "kube-system", "kubernetes-dashboard")
-	dashboardURL, err := dashboard(client, arenaNamespace, "kubernetes-dashboard")
+	dashboardURL, err := dashboard(client, namespace, "kubernetes-dashboard")
+
+	if err != nil {
+		log.Debugf("Get dashboard failed due to %v", err)
+		// retry for the existing customers, will be deprecated in the future
+		dashboardURL, err = dashboard(client, arenaNamespace, "kubernetes-dashboard")
+		if err != nil {
+			log.Debugf("Get dashboard failed due to %v", err)
+		}
+	}
 
 	if err != nil {
 		log.Debugf("Get dashboard failed due to %v", err)
@@ -85,7 +95,7 @@ func (s *StandaloneJobTrainer) Type() string {
 func (s *StandaloneJobTrainer) IsSupported(name, ns string) bool {
 	supported := false
 
-	if len(allJobs) > 0 {
+	if useCache {
 		for _, job := range allJobs {
 			if isStandaloneJob(name, ns, job) {
 				supported = true
@@ -94,7 +104,7 @@ func (s *StandaloneJobTrainer) IsSupported(name, ns string) bool {
 			}
 		}
 	} else {
-		jobList, err := s.client.BatchV1().Jobs(namespace).List(metav1.ListOptions{
+		jobList, err := s.client.BatchV1().Jobs(ns).List(metav1.ListOptions{
 			TypeMeta: metav1.TypeMeta{
 				Kind:       "ListOptions",
 				APIVersion: "v1",
@@ -113,7 +123,7 @@ func (s *StandaloneJobTrainer) IsSupported(name, ns string) bool {
 }
 
 func (s *StandaloneJobTrainer) GetTrainingJob(name, namespace string) (tj TrainingJob, err error) {
-	if len(allPods) > 0 {
+	if useCache {
 		tj, err = s.getTrainingJobFromCache(name, namespace)
 	} else {
 		tj, err = s.getTrainingJob(name, namespace)
@@ -245,6 +255,42 @@ func (s *StandaloneJobTrainer) getTrainingJobFromCache(name, ns string) (Trainin
 			trainerType: s.Type(),
 		},
 	}, nil
+}
+
+/**
+* List Training jobs
+ */
+func (s *StandaloneJobTrainer) ListTrainingJobs() (jobs []TrainingJob, err error) {
+	jobs = []TrainingJob{}
+	jobInfos := []types.TrainingJobInfo{}
+innerLoop:
+	for _, standaloneJob := range allJobs {
+		jobInfo := types.TrainingJobInfo{}
+
+		log.Debugf("find standaloneJob %s in %s", standaloneJob.Name, standaloneJob.Namespace)
+		if val, ok := standaloneJob.Labels["release"]; ok && (standaloneJob.Name == fmt.Sprintf("%s-training", val)) {
+			log.Debugf("the standaloneJob %s with labels %s found in List", standaloneJob.Name, val)
+			jobInfo.Name = val
+		} else {
+			log.Debugf("the jobs %s with labels %s is not standaloneJob in List", standaloneJob.Name, val)
+			continue innerLoop
+		}
+
+		jobInfo.Namespace = standaloneJob.Namespace
+		jobInfos = append(jobInfos, jobInfo)
+		// jobInfos = append(jobInfos, types.TrainingJobInfo{Name: standaloneJob.})
+	}
+	log.Debugf("jobInfos %v", jobInfos)
+
+	for _, jobInfo := range jobInfos {
+		job, err := s.getTrainingJobFromCache(jobInfo.Name, jobInfo.Namespace)
+		if err != nil {
+			return jobs, err
+		}
+		jobs = append(jobs, job)
+	}
+
+	return jobs, err
 }
 
 func isStandaloneJob(name, ns string, item batchv1.Job) bool {

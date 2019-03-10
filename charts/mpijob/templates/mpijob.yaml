@@ -5,7 +5,7 @@
 apiVersion: kubeflow.org/v1alpha1
 kind: MPIJob
 metadata:
-  name: {{ template "mpijob.fullname" . }}
+  name: {{ .Release.Name }}
   labels:
     app: {{ template "mpijob.name" . }}
     chart: {{ template "mpijob.chart" . }}
@@ -20,7 +20,7 @@ spec:
   replicas: {{ .Values.workers }}
   template:
     metadata:
-      name: {{ template "mpijob.fullname" . }}
+      name: {{ .Release.Name }}
       labels:
         app: {{ template "mpijob.name" . }}
         chart: {{ template "mpijob.chart" . }}
@@ -34,8 +34,10 @@ spec:
     spec:
       restartPolicy: Never
       {{- if .Values.useHostNetwork }}
+      {{- if not .Values.useENI }}
       hostNetwork: {{ .Values.useHostNetwork }}
       dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
       {{- end }}
       {{- if .Values.useHostPID }}
       hostPID: {{ .Values.useHostPID }}

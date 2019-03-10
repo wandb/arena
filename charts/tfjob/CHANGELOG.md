@@ -58,3 +58,11 @@
 ### 0.14.0
 
 * Make Hostnetwork as false by default
+
+### 0.15.0
+
+* Fix hostnetwork issue which is introduced by ENI
+
+### 0.16.0
+
+* Remove -tfjob from tfjob name
